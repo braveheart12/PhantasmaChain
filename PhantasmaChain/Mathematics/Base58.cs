@@ -22,7 +22,7 @@ namespace Phantasma.Mathematics
             }
 
             byte[] bytes = bi.ToByteArray();
-            Array.Reverse(bytes);
+          //  Array.Reverse(bytes);
 
             int leadingZeros = 0;
             for (int i = 0; i < input.Length && input[i] == Alphabet[0]; i++)

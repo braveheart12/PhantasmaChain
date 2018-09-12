@@ -84,7 +84,7 @@ namespace Phantasma.Blockchain.Contracts.Native
             Expect(otherNexus.IsKnown(hash));
 
             var tx = otherChain.FindTransaction(hash);
-            BigInteger amount = null; // TODO obtain real amount from "tx"
+            BigInteger amount = BigInteger.Zero; // TODO obtain real amount from "tx"
 
             var tokenContract = this.Chain.FindContract(token);
             Expect(tokenContract != null);

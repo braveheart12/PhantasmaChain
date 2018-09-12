@@ -147,9 +147,10 @@ namespace Phantasma.Core.Utils
             return number ^ (BigInteger.One << bit);
         }
 
-        /*public static int BitLength(this BigInteger number)
-        {
-            return (int)Math.Ceiling(BigInteger.Log(number, 2));
-        }*/
+
+/*        public static int BitLength(this BigInteger number)
+{
+    return (int)Math.Ceiling(BigInteger.Log(number, 2));
+}*/
     }
 }
