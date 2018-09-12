@@ -44,6 +44,7 @@ namespace Phantasma.Mathematics
             }
             temp[input.Length] = 0;
 
+            Array.Reverse(temp);
             var value = new BigInteger(temp);
             var sb = new StringBuilder();
             while (value >= 58)
