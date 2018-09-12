@@ -61,15 +61,17 @@ namespace Phantasma.Mathematics
 
         private void InitFromArray(byte[] bytes)
         {
-            int n = 1;
-            for (int i = 1; i < bytes.Length; i++)
+            int n = bytes.Length;
+            for (int i = n - 1; i >= 0; i--)
             {
                 if (bytes[i] == 0)
                 {
+                    n--;
+                }
+                else
+                {
                     break;
                 }
-
-                n++;
             }
 
             _data = new byte[n];
@@ -237,6 +239,13 @@ namespace Phantasma.Mathematics
 
         private static void DivMod(BigInteger X, BigInteger Y, out BigInteger quot, out BigInteger rem)
         {
+            if (Y == 0)
+            {
+                quot = BigInteger.Zero;
+                rem = BigInteger.Zero;
+                return;
+            }
+
             var u = X._data;
             var v = Y._data;
             var q = new byte[X._data.Length - Y._data.Length + 1];

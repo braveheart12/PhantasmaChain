@@ -22,7 +22,6 @@ namespace Phantasma.Mathematics
             }
 
             byte[] bytes = bi.ToByteArray();
-          //  Array.Reverse(bytes);
 
             int leadingZeros = 0;
             for (int i = 0; i < input.Length && input[i] == Alphabet[0]; i++)
@@ -37,15 +36,7 @@ namespace Phantasma.Mathematics
 
         public static string Encode(byte[] input)
         {
-            var temp = new byte[input.Length + 1];
-            for (int i=0; i<input.Length; i++)
-            {
-                temp[i] = input[(input.Length - 1) - i];
-            }
-            temp[input.Length] = 0;
-
-            Array.Reverse(temp);
-            var value = new BigInteger(temp);
+            var value = new BigInteger(input);
             var sb = new StringBuilder();
             while (value >= 58)
             {
