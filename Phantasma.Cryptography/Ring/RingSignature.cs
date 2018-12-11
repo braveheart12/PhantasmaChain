@@ -83,7 +83,7 @@ namespace Phantasma.Cryptography.Ring
                 if (i != identity)
                 {
                     c[i] = rng.GenerateInteger(GroupParameters.SubgroupSize);
-                    b = (b + c[i]).Mod(GroupParameters.SubgroupSize);
+                    b = (b + c[i]) % (GroupParameters.SubgroupSize);
                 }
 
             var x = (BigInteger[])publicKeys.Clone();
@@ -98,9 +98,9 @@ namespace Phantasma.Cryptography.Ring
             var prefix = ByteArrayUtils.ConcatBytes(ConcatInts(L, y0), message);
 
             var h1 = Hash1(ConcatInts(prefix, a, mod.Pow(new[] { h, y0 }, new[] { r, b })));
-            c[identity] = (h1 - b).Mod(GroupParameters.SubgroupSize);
+            c[identity] = (h1 - b) % (GroupParameters.SubgroupSize);
 
-            var s = (r - c[identity] * privateKey).Mod(GroupParameters.SubgroupSize);
+            var s = (r - c[identity] * privateKey) % (GroupParameters.SubgroupSize);
 
             return new RingSignature(y0, s, c);
         }
@@ -116,7 +116,7 @@ namespace Phantasma.Cryptography.Ring
         public bool VerifySignature(byte[] message, BigInteger[] publicKeys)
         {
             int[,][] cache = null;
-            var a = (mod.Pow(publicKeys, this.C, ref cache) * mod.Pow(GroupParameters.Generator, this.S)).Mod(GroupParameters.Prime);
+            var a = (mod.Pow(publicKeys, this.C, ref cache) * mod.Pow(GroupParameters.Generator, this.S)) % (GroupParameters.Prime);
 
             return VerifyA(message, publicKeys, a);
         }
@@ -132,7 +132,7 @@ namespace Phantasma.Cryptography.Ring
         /// <returns></returns>
         public bool VerifySignature(byte[] message, MultiExponentiation keyCache)
         {
-            var a = (keyCache.Pow(this.C) * mod.Pow(GroupParameters.Generator, this.S)).Mod(GroupParameters.Prime);
+            var a = (keyCache.Pow(this.C) * mod.Pow(GroupParameters.Generator, this.S)) % (GroupParameters.Prime);
 
             return VerifyA(message, keyCache.Bases, a);
         }
@@ -141,7 +141,7 @@ namespace Phantasma.Cryptography.Ring
         {
             var b = BigInteger.Zero;
             for (int i = 0; i < this.C.Length; ++i)
-                b = (b + this.C[i]).Mod(GroupParameters.SubgroupSize);
+                b = (b + this.C[i]) % (GroupParameters.SubgroupSize);
 
             var L = ConcatInts(null, publicKeys);
             var h = Hash2(L);

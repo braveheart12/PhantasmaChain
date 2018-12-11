@@ -1,6 +1,7 @@
 ﻿using Phantasma.Core;
 using System;
 using System.IO;
+using System.Linq;
 
 /*
  * Implementation of BigInteger class, byte-compatible with System.Numerics (which we don't use due to lack of compatibility with Bridge.NET)
@@ -9,1106 +10,235 @@ using System.IO;
  */
 namespace Phantasma.Numerics
 {
-    public class BigInteger
+    public class BigInteger : IEquatable<BigInteger>, IComparable<BigInteger>
     {
-        private const int maxLength = 160;
+        private int _sign;
+        private uint[] _data;
+        private const int _Base = sizeof(uint) * 8;    //number of bits required for shift operations
+
+        private static uint _MaxVal => (uint)Math.Pow(2, _Base) - 1;
 
         public static readonly BigInteger Zero = new BigInteger(0L);
 
         public static readonly BigInteger One = new BigInteger(1L);
+        private int dataLength => _data.Length;
 
-        private uint[] _data;
 
-        public int dataLength;
-
-        public bool IsEven => this % 2 == 0;
-
-        public BigInteger()
+        public BigInteger(BigInteger other)
         {
-            _data = new uint[maxLength];
-            dataLength = 1;
+            _sign = other._sign;
+            _data = new uint[other._data.Length];
+            Array.Copy(other._data, _data, _data.Length);
         }
 
-        public BigInteger(long value)
+        public BigInteger(byte[] bytes, int sign = 1)
         {
-            _data = new uint[maxLength];
-            long num = value;
-            dataLength = 0;
-            while (value != 0L && dataLength < maxLength)
+            _sign = sign;
+            _data = null;
+
+            uint[] uintArray = new uint[(bytes.Length / 8) + (bytes.Length % 8 > 0 ? 1 : 0)];
+
+            int bytePosition = 0;
+            for (int i = 0, j = -1; i < bytes.Length; i++)
             {
-                _data[dataLength] = (uint)(value & uint.MaxValue);
-                value >>= 32;
-                dataLength++;
+                bytePosition = i % 8;
+
+                if (bytePosition == 0)
+                    j++;
+
+                uintArray[j] += (uint) (bytes[i] << bytePosition);
             }
 
-            if (num > 0)
-            {
-                Throw.If(value != 0L || ((int)_data[_data.Length - 1] & -2147483648) != 0, "Positive overflow in constructor.");
-            }
-            else
-            if (num < 0)
-            {
-                Throw.If(value != -1 || ((int)_data[dataLength - 1] & -2147483648) == 0, "Negative underflow in constructor.");
-            }
-
-            if (dataLength == 0)
-            {
-                dataLength = 1;
-            }
+            InitFromArray(uintArray);
         }
 
-        public BigInteger(ulong value)
+        public BigInteger(uint[] bytes, int sign = 1)
         {
-            _data = new uint[maxLength];
-            dataLength = 0;
+            _sign = sign;
+            _data = null;
 
-            while (value != 0L && dataLength < _data.Length)
-            {
-                _data[dataLength] = (uint)(value & uint.MaxValue);
-                value >>= 32;
-                dataLength++;
-            }
-
-            Throw.If(value != 0L || ((int)_data[_data.Length - 1] & -2147483648) != 0, "Positive overflow in constructor.");
-
-            if (dataLength == 0)
-            {
-                dataLength = 1;
-            }
+            InitFromArray(bytes);
         }
 
-        public int CompareTo(BigInteger n)
+        public BigInteger(int val) : this((long)val)
         {
-            return (int)(this - n);
         }
 
-        public BigInteger(BigInteger bi)
+        public BigInteger(uint val) : this((long)val)
         {
-            _data = new uint[maxLength];
-            dataLength = bi.dataLength;
-            for (int i = 0; i < dataLength; i++)
+        }
+
+        public BigInteger(long val)
+        {
+            if (val == 0)
             {
-                _data[i] = bi._data[i];
+                _sign = 0;
+                _data = new uint[1] { 0 };
+                return;
             }
+
+            _sign = val < 0 ? -1 : 1;
+
+            if (val < 0) val = -val;
+
+
+            var bytes = BitConverter.GetBytes(val);
+
+            var uintBytes = new uint[(bytes.Length / 4) + 1];
+
+            for (int i = 0; i < bytes.Length; i++)
+            {
+                int uintIndex = (i / 4);
+                int shiftAmount = (i % 4) * 8;
+                uintBytes[uintIndex] += (uint)(bytes[i] << shiftAmount);
+            }
+
+            _data = null;
+            InitFromArray(uintBytes);
+        }
+
+        private void InitFromArray(uint[] digits)
+        {
+            int n = digits.Length;
+            for (int i = n - 1; i >= 0; i--)
+            {
+                if (digits[i] == 0)
+                {
+                    n--;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            _data = new uint[n];
+            Array.Copy(digits, _data, n);
+        }
+
+        public static BigInteger FromHex(string p0)
+        {
+            return new BigInteger(p0, 16);
         }
 
         public BigInteger(string value, int radix)
         {
+            value = value.ToUpper().Trim().Replace(" ", "").Replace("\n", "").Replace("\r", "");
+
+            var bigInteger = new BigInteger(0);
             var bi = new BigInteger(1L);
-            var bigInteger = new BigInteger();
-            value = value.ToUpper().Trim();
 
-            int num = 0;
-            if (value[0] == '-')
+            if (value == "0")
             {
-                num = 1;
+                _sign = 0;
+                _data = new uint[1] { 0 };
+                return;
             }
 
-            for (int num2 = value.Length - 1; num2 >= num; num2--)
+            _sign = (value[0] == '-') ? -1 : 1;
+
+            int limit = _sign == -1 ? 1 : 0;
+
+            for (int i = value.Length - 1; i >= limit; i--)
             {
-                int num3 = value[num2];
-                num3 = ((num3 >= 48 && num3 <= 57) ? (num3 - 48) : ((num3 < 65 || num3 > 90) ? 9999999 : (num3 - 65 + 10)));
-                Throw.If(num3 >= radix, "Invalid string in constructor.");
+                int val = value[i];
+                val = ((val >= 48 && val <= 57) ? (val - 48) : ((val < 65 || val > 90) ? 9999999 : (val - 65 + 10)));
+                Throw.If(val >= radix, "Invalid string in constructor.");
 
-                if (value[0] == '-')
-                {
-                    num3 = -num3;
-                }
+                bigInteger += bi * val;
 
-                bigInteger += bi * num3;
-
-                if (num2 - 1 >= num)
-                {
+                if (i - 1 >= limit)
                     bi *= radix;
-                }
             }
 
-            if (value[0] == '-')
-            {
-                Throw.If(((int)bigInteger._data[bigInteger._data.Length - 1] & -2147483648) == 0, "Negative underflow in constructor.");
-            }
-            else
-            {
-                Throw.If(((int)bigInteger._data[bigInteger._data.Length - 1] & -2147483648) != 0, "Positive overflow in constructor.");
-            }
-
-            _data = new uint[maxLength];
-            for (int i = 0; i < bigInteger.dataLength; i++)
-            {
-                _data[i] = bigInteger._data[i];
-            }
-            dataLength = bigInteger.dataLength;
+            _data = null;
+            InitFromArray(bigInteger._data);
         }
 
-        public BigInteger(byte[] input)
-        {
-            InitFromArray(input);
-        }
-
-        private void InitFromArray(byte[] input)
-        {
-            var inData = new byte[input.Length];
-            for (int i = 0; i < inData.Length; i++)
-            {
-                inData[i] = input[(inData.Length - 1) - i];
-            }
-            int num = inData.Length;
-            dataLength = num >> 2;
-            int num2 = num & 3;
-            if (num2 != 0)
-            {
-                dataLength++;
-            }
-
-            Throw.If(dataLength > maxLength, "Byte overflow in constructor");
-            _data = new uint[maxLength];
-
-            int num3 = 0;
-            for (int num4 = num - 1; num4 >= 3; num4 -= 4)
-            {
-                _data[num3++] = (uint)((inData[num4 - 3] << 24) + (inData[num4 - 2] << 16) + (inData[num4 - 1] << 8) + inData[num4]);
-            }
-
-            switch (num2)
-            {
-                case 1:
-                    _data[num3] = inData[0];
-                    break;
-                case 2:
-                    _data[num3] = (uint)((inData[0] << 8) + inData[1]);
-                    break;
-                case 3:
-                    _data[num3] = (uint)((inData[0] << 16) + (inData[1] << 8) + inData[2]);
-                    break;
-            }
-
-            if (dataLength == 0)
-            {
-                dataLength = 1;
-            }
-
-            while (dataLength > 1 && _data[dataLength - 1] == 0)
-            {
-                dataLength--;
-            }
-        }
-
-        public BigInteger(uint[] inData)
-        {
-            dataLength = inData.Length;
-            Throw.If(dataLength > maxLength, "Byte overflow in constructor.");
-
-            _data = new uint[maxLength];
-            int num = dataLength - 1;
-            int num2 = 0;
-
-            while (num >= 0)
-            {
-                _data[num2] = inData[num];
-                num--;
-                num2++;
-            }
-
-            while (dataLength > 1 && _data[dataLength - 1] == 0)
-            {
-                dataLength--;
-            }
-        }
-
-        public static implicit operator BigInteger(long value)
-        {
-            return new BigInteger(value);
-        }
-
-        public static implicit operator BigInteger(ulong value)
-        {
-            return new BigInteger(value);
-        }
-
-        public static implicit operator BigInteger(int value)
-        {
-            return new BigInteger(value);
-        }
-
-        public static implicit operator BigInteger(uint value)
-        {
-            return new BigInteger((ulong)value);
-        }
-
-        public static BigInteger operator +(BigInteger bi1, BigInteger bi2)
-        {
-            var bigInteger = new BigInteger
-            {
-                dataLength = ((bi1.dataLength > bi2.dataLength) ? bi1.dataLength : bi2.dataLength)
-            };
-
-            long num = 0L;
-            for (int i = 0; i < bigInteger.dataLength; i++)
-            {
-                long num2 = (long)bi1._data[i] + (long)bi2._data[i] + num;
-                num = num2 >> 32;
-                bigInteger._data[i] = (uint)(num2 & uint.MaxValue);
-            }
-
-            if (num != 0L && bigInteger.dataLength < bigInteger._data.Length)
-            {
-                bigInteger._data[bigInteger.dataLength] = (uint)num;
-                bigInteger.dataLength++;
-            }
-
-            while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-            {
-                bigInteger.dataLength--;
-            }
-
-            int num3 = maxLength - 1;
-            if (((int)bi1._data[num3] & -2147483648) == ((int)bi2._data[num3] & -2147483648) && ((int)bigInteger._data[num3] & -2147483648) != ((int)bi1._data[num3] & -2147483648))
-            {
-                throw new ArithmeticException();
-            }
-
-            return bigInteger;
-        }
-
-        public static BigInteger operator ++(BigInteger bi1)
-        {
-            BigInteger bigInteger = new BigInteger(bi1);
-            long num = 1L;
-            int num2 = 0;
-            while (num != 0L && num2 < maxLength)
-            {
-                long num3 = bigInteger._data[num2];
-                num3++;
-                bigInteger._data[num2] = (uint)(num3 & uint.MaxValue);
-                num = num3 >> 32;
-                num2++;
-            }
-            if (num2 <= bigInteger.dataLength)
-            {
-                while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-                {
-                    bigInteger.dataLength--;
-                }
-            }
-            else
-            {
-                bigInteger.dataLength = num2;
-            }
-            int num4 = maxLength - 1;
-
-
-            Throw.If(((int)bi1._data[num4] & -2147483648) == 0 && ((int)bigInteger._data[num4] & -2147483648) != ((int)bi1._data[num4] & -2147483648), "Overflow in increment.");
-
-            return bigInteger;
-        }
-
-        public static BigInteger operator -(BigInteger bi1, BigInteger bi2)
-        {
-            var bigInteger = new BigInteger
-            {
-                dataLength = ((bi1.dataLength > bi2.dataLength) ? bi1.dataLength : bi2.dataLength)
-            };
-
-            long num = 0L;
-
-            for (int i = 0; i < bigInteger.dataLength; i++)
-            {
-                long num2 = (long)bi1._data[i] - (long)bi2._data[i] - num;
-                bigInteger._data[i] = (uint)(num2 & uint.MaxValue);
-                num = ((num2 >= 0) ? 0 : 1);
-            }
-
-            if (num != 0)
-            {
-                for (int j = bigInteger.dataLength; j < bigInteger._data.Length; j++)
-                {
-                    bigInteger._data[j] = uint.MaxValue;
-                }
-                bigInteger.dataLength = maxLength;
-            }
-
-            while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-            {
-                bigInteger.dataLength--;
-            }
-            int num3 = maxLength - 1;
-
-            Throw.If(((int)bi1._data[num3] & -2147483648) != ((int)bi2._data[num3] & -2147483648) && ((int)bigInteger._data[num3] & -2147483648) != ((int)bi1._data[num3] & -2147483648), "overflow in subtraction");
-
-            return bigInteger;
-        }
-
-        public static BigInteger operator --(BigInteger bi1)
-        {
-            var bigInteger = new BigInteger(bi1);
-            bool flag = true;
-            int num = 0;
-
-            while (flag && num < maxLength)
-            {
-                long num2 = bigInteger._data[num];
-                num2--;
-                bigInteger._data[num] = (uint)(num2 & uint.MaxValue);
-                if (num2 >= 0)
-                {
-                    flag = false;
-                }
-                num++;
-            }
-
-            if (num > bigInteger.dataLength)
-            {
-                bigInteger.dataLength = num;
-            }
-
-            while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-            {
-                bigInteger.dataLength--;
-            }
-
-            int num3 = maxLength - 1;
-            Throw.If(((int)bi1._data[num3] & -2147483648) != 0 && ((int)bigInteger._data[num3] & -2147483648) != ((int)bi1._data[num3] & -2147483648), "Underflow in decrement.");
-
-            return bigInteger;
-        }
-
-        public static BigInteger operator *(BigInteger bi1, BigInteger bi2)
-        {
-            int num = maxLength - 1;
-            bool flag = false;
-            bool flag2 = false;
-            try
-            {
-                if (((int)bi1._data[num] & -2147483648) != 0)
-                {
-                    flag = true;
-                    bi1 = -bi1;
-                }
-                if (((int)bi2._data[num] & -2147483648) != 0)
-                {
-                    flag2 = true;
-                    bi2 = -bi2;
-                }
-            }
-            catch (Exception)
-            {
-            }
-
-            var bigInteger = new BigInteger();
-            try
-            {
-                for (int i = 0; i < bi1.dataLength; i++)
-                {
-                    if (bi1._data[i] != 0)
-                    {
-                        ulong num2 = 0uL;
-                        int num3 = 0;
-                        int num4 = i;
-                        while (num3 < bi2.dataLength)
-                        {
-                            ulong num5 = (ulong)((long)bi1._data[i] * (long)bi2._data[num3] + bigInteger._data[num4] + (long)num2);
-                            bigInteger._data[num4] = (uint)(num5 & uint.MaxValue);
-                            num2 = num5 >> 32;
-                            num3++;
-                            num4++;
-                        }
-                        if (num2 != 0)
-                        {
-                            bigInteger._data[i + bi2.dataLength] = (uint)num2;
-                        }
-                    }
-                }
-            }
-            catch (Exception)
-            {
-                throw new ArithmeticException("Multiplication overflow.");
-            }
-
-            bigInteger.dataLength = bi1.dataLength + bi2.dataLength;
-            if (bigInteger.dataLength > maxLength)
-            {
-                bigInteger.dataLength = maxLength;
-            }
-
-            while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-            {
-                bigInteger.dataLength--;
-            }
-
-            if (((int)bigInteger._data[num] & -2147483648) != 0)
-            {
-                if (flag != flag2 && bigInteger._data[num] == 2147483648u)
-                {
-                    if (bigInteger.dataLength == 1)
-                    {
-                        return bigInteger;
-                    }
-                    bool flag3 = true;
-                    for (int j = 0; j < bigInteger.dataLength - 1; j++)
-                    {
-                        if (!flag3)
-                        {
-                            break;
-                        }
-                        if (bigInteger._data[j] != 0)
-                        {
-                            flag3 = false;
-                        }
-                    }
-                    if (flag3)
-                    {
-                        return bigInteger;
-                    }
-                }
-
-                throw new ArithmeticException("Multiplication overflow.");
-            }
-
-            if (flag != flag2)
-            {
-                return -bigInteger;
-            }
-            return bigInteger;
-        }
-
-        public static BigInteger operator <<(BigInteger bi1, int shiftVal)
-        {
-            var bigInteger = new BigInteger(bi1);
-            bigInteger.dataLength = ShiftLeft(bigInteger._data, shiftVal);
-            return bigInteger;
-        }
-
-        private static int ShiftLeft(uint[] buffer, int shiftVal)
-        {
-            int num = 32;
-            int num2 = buffer.Length;
-            while (num2 > 1 && buffer[num2 - 1] == 0)
-            {
-                num2--;
-            }
-
-            for (int num3 = shiftVal; num3 > 0; num3 -= num)
-            {
-                if (num3 < num)
-                {
-                    num = num3;
-                }
-                ulong num4 = 0uL;
-                for (int i = 0; i < num2; i++)
-                {
-                    ulong num5 = (ulong)buffer[i] << num;
-                    num5 |= num4;
-                    buffer[i] = (uint)(num5 & uint.MaxValue);
-                    num4 = num5 >> 32;
-                }
-                if (num4 != 0 && num2 + 1 <= buffer.Length)
-                {
-                    buffer[num2] = (uint)num4;
-                    num2++;
-                }
-            }
-
-            return num2;
-        }
-
-        public static BigInteger operator >>(BigInteger bi1, int shiftVal)
-        {
-            var bigInteger = new BigInteger(bi1);
-            bigInteger.dataLength = ShiftRight(bigInteger._data, shiftVal);
-            if (((int)bi1._data[maxLength - 1] & -2147483648) != 0)
-            {
-                for (int num = maxLength - 1; num >= bigInteger.dataLength; num--)
-                {
-                    bigInteger._data[num] = uint.MaxValue;
-                }
-                uint num2 = 2147483648u;
-                for (int i = 0; i < 32; i++)
-                {
-                    if ((bigInteger._data[bigInteger.dataLength - 1] & num2) != 0)
-                    {
-                        break;
-                    }
-                    bigInteger._data[bigInteger.dataLength - 1] |= num2;
-                    num2 >>= 1;
-                }
-                bigInteger.dataLength = maxLength;
-            }
-            return bigInteger;
-        }
-
-        private static int ShiftRight(uint[] buffer, int shiftVal)
-        {
-            int num = 32;
-            int num2 = 0;
-            int num3 = buffer.Length;
-            while (num3 > 1 && buffer[num3 - 1] == 0)
-            {
-                num3--;
-            }
-            for (int num4 = shiftVal; num4 > 0; num4 -= num)
-            {
-                if (num4 < num)
-                {
-                    num = num4;
-                    num2 = 32 - num;
-                }
-                ulong num5 = 0uL;
-                for (int num6 = num3 - 1; num6 >= 0; num6--)
-                {
-                    ulong num7 = (ulong)buffer[num6] >> num;
-                    num7 |= num5;
-                    num5 = (((ulong)buffer[num6] << num2) & uint.MaxValue);
-                    buffer[num6] = (uint)num7;
-                }
-            }
-            while (num3 > 1 && buffer[num3 - 1] == 0)
-            {
-                num3--;
-            }
-            return num3;
-        }
-
-        public static BigInteger operator ~(BigInteger bi1)
-        {
-            var bigInteger = new BigInteger(bi1);
-            for (int i = 0; i < maxLength; i++)
-            {
-                bigInteger._data[i] = ~bi1._data[i];
-            }
-
-            bigInteger.dataLength = maxLength;
-            while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-            {
-                bigInteger.dataLength--;
-            }
-
-            return bigInteger;
-        }
-
-        public static BigInteger operator -(BigInteger bi1)
-        {
-            if (bi1.dataLength == 1 && bi1._data[0] == 0)
-            {
-                return new BigInteger();
-            }
-
-            BigInteger bigInteger = new BigInteger(bi1);
-            for (int i = 0; i < maxLength; i++)
-            {
-                bigInteger._data[i] = ~bi1._data[i];
-            }
-
-            long num = 1L;
-            int num2 = 0;
-            while (num != 0L && num2 < maxLength)
-            {
-                long num3 = bigInteger._data[num2];
-                num3++;
-                bigInteger._data[num2] = (uint)(num3 & uint.MaxValue);
-                num = num3 >> 32;
-                num2++;
-            }
-
-            Throw.If(((int)bi1._data[maxLength - 1] & -2147483648) == ((int)bigInteger._data[maxLength - 1] & -2147483648), "Overflow in negation.");
-
-            bigInteger.dataLength = maxLength;
-            while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-            {
-                bigInteger.dataLength--;
-            }
-
-            return bigInteger;
-        }
-
-        public static bool operator ==(BigInteger bi1, BigInteger bi2)
-        {
-            if (object.ReferenceEquals(bi1, null))
-            {
-                return object.ReferenceEquals(bi2, null);
-            }
-            return bi1.Equals(bi2);
-        }
-
-        public static bool operator !=(BigInteger bi1, BigInteger bi2)
-        {
-            if (object.ReferenceEquals(bi1, null))
-            {
-                return !object.ReferenceEquals(bi2, null);
-            }
-
-            return !bi1.Equals(bi2);
-        }
-
-        public override bool Equals(object o)
-        {
-            if (o == null)
-            {
-                return false;
-            }
-
-            var bigInteger = (BigInteger)o;
-            if (dataLength != bigInteger.dataLength)
-            {
-                return false;
-            }
-            for (int i = 0; i < dataLength; i++)
-            {
-                if (_data[i] != bigInteger._data[i])
-                {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        public override int GetHashCode()
-        {
-            if (_data == null) return 0;
-            unchecked
-            {
-                int hash = 17;
-                for (int i = 0; i < _data.Length; i++)
-                    hash = 31 * hash + _data[i].GetHashCode();
-                return hash;
-            }
-        }
-
-        public static bool operator >(BigInteger bi1, BigInteger bi2)
-        {
-            int num = maxLength - 1;
-            if (((int)bi1._data[num] & -2147483648) != 0 && ((int)bi2._data[num] & -2147483648) == 0)
-            {
-                return false;
-            }
-
-            if (((int)bi1._data[num] & -2147483648) == 0 && ((int)bi2._data[num] & -2147483648) != 0)
-            {
-                return true;
-            }
-
-            int num2 = (bi1.dataLength > bi2.dataLength) ? bi1.dataLength : bi2.dataLength;
-            num = num2 - 1;
-            while (num >= 0 && bi1._data[num] == bi2._data[num])
-            {
-                num--;
-            }
-
-            if (num >= 0)
-            {
-                if (bi1._data[num] > bi2._data[num])
-                {
-                    return true;
-                }
-                return false;
-            }
-            return false;
-        }
-
-        public static bool operator <(BigInteger bi1, BigInteger bi2)
-        {
-            int num = maxLength - 1;
-
-            if (((int)bi1._data[num] & -2147483648) != 0 && ((int)bi2._data[num] & -2147483648) == 0)
-            {
-                return true;
-            }
-
-            if (((int)bi1._data[num] & -2147483648) == 0 && ((int)bi2._data[num] & -2147483648) != 0)
-            {
-                return false;
-            }
-
-            int num2 = (bi1.dataLength > bi2.dataLength) ? bi1.dataLength : bi2.dataLength;
-            num = num2 - 1;
-            while (num >= 0 && bi1._data[num] == bi2._data[num])
-            {
-                num--;
-            }
-
-            if (num >= 0)
-            {
-                if (bi1._data[num] < bi2._data[num])
-                {
-                    return true;
-                }
-                return false;
-            }
-
-            return false;
-        }
-
-        public static bool operator >=(BigInteger bi1, BigInteger bi2)
-        {
-            return bi1 == bi2 || bi1 > bi2;
-        }
-
-        public static bool operator <=(BigInteger bi1, BigInteger bi2)
-        {
-            return bi1 == bi2 || bi1 < bi2;
-        }
-
-        private static void MultiByteDivide(BigInteger bi1, BigInteger bi2, BigInteger outQuotient, BigInteger outRemainder)
-        {
-            uint[] array = new uint[maxLength];
-            int num = bi1.dataLength + 1;
-            uint[] array2 = new uint[num];
-            uint num2 = 2147483648u;
-            uint num3 = bi2._data[bi2.dataLength - 1];
-            int num4 = 0;
-            int num5 = 0;
-            while (num2 != 0 && (num3 & num2) == 0)
-            {
-                num4++;
-                num2 >>= 1;
-            }
-            for (int i = 0; i < bi1.dataLength; i++)
-            {
-                array2[i] = bi1._data[i];
-            }
-            ShiftLeft(array2, num4);
-            bi2 <<= num4;
-            int num6 = num - bi2.dataLength;
-            int num7 = num - 1;
-            ulong num8 = bi2._data[bi2.dataLength - 1];
-            ulong num9 = bi2._data[bi2.dataLength - 2];
-            int num10 = bi2.dataLength + 1;
-            uint[] array3 = new uint[num10];
-            while (num6 > 0)
-            {
-                ulong num11 = ((ulong)array2[num7] << 32) + array2[num7 - 1];
-                ulong num12 = num11 / num8;
-                ulong num13 = num11 % num8;
-                bool flag = false;
-                while (!flag)
-                {
-                    flag = true;
-                    if (num12 == 4294967296L || num12 * num9 > (num13 << 32) + array2[num7 - 2])
-                    {
-                        num12--;
-                        num13 += num8;
-                        if (num13 < 4294967296L)
-                        {
-                            flag = false;
-                        }
-                    }
-                }
-                for (int j = 0; j < num10; j++)
-                {
-                    array3[j] = array2[num7 - j];
-                }
-
-                var bigInteger = new BigInteger(array3);
-                BigInteger bigInteger2 = bi2 * (long)num12;
-                while (bigInteger2 > bigInteger)
-                {
-                    num12--;
-                    bigInteger2 -= bi2;
-                }
-                BigInteger bigInteger3 = bigInteger - bigInteger2;
-                for (int k = 0; k < num10; k++)
-                {
-                    array2[num7 - k] = bigInteger3._data[bi2.dataLength - k];
-                }
-                array[num5++] = (uint)num12;
-                num7--;
-                num6--;
-            }
-            outQuotient.dataLength = num5;
-            int l = 0;
-            int num15 = outQuotient.dataLength - 1;
-            while (num15 >= 0)
-            {
-                outQuotient._data[l] = array[num15];
-                num15--;
-                l++;
-            }
-            for (; l < maxLength; l++)
-            {
-                outQuotient._data[l] = 0u;
-            }
-            while (outQuotient.dataLength > 1 && outQuotient._data[outQuotient.dataLength - 1] == 0)
-            {
-                outQuotient.dataLength--;
-            }
-            if (outQuotient.dataLength == 0)
-            {
-                outQuotient.dataLength = 1;
-            }
-            outRemainder.dataLength = ShiftRight(array2, num4);
-            for (l = 0; l < outRemainder.dataLength; l++)
-            {
-                outRemainder._data[l] = array2[l];
-            }
-            for (; l < maxLength; l++)
-            {
-                outRemainder._data[l] = 0u;
-            }
-        }
-
-        private static void SingleByteDivide(BigInteger bi1, BigInteger bi2, BigInteger outQuotient, BigInteger outRemainder)
-        {
-            uint[] array = new uint[maxLength];
-            int num = 0;
-            for (int i = 0; i < maxLength; i++)
-            {
-                outRemainder._data[i] = bi1._data[i];
-            }
-            outRemainder.dataLength = bi1.dataLength;
-            while (outRemainder.dataLength > 1 && outRemainder._data[outRemainder.dataLength - 1] == 0)
-            {
-                outRemainder.dataLength--;
-            }
-            ulong num2 = bi2._data[0];
-            int num3 = outRemainder.dataLength - 1;
-            ulong num4 = outRemainder._data[num3];
-            if (num4 >= num2)
-            {
-                ulong num5 = num4 / num2;
-                array[num++] = (uint)num5;
-                outRemainder._data[num3] = (uint)(num4 % num2);
-            }
-            num3--;
-            while (num3 >= 0)
-            {
-                num4 = ((ulong)outRemainder._data[num3 + 1] << 32) + outRemainder._data[num3];
-                ulong num7 = num4 / num2;
-                array[num++] = (uint)num7;
-                outRemainder._data[num3 + 1] = 0u;
-                outRemainder._data[num3--] = (uint)(num4 % num2);
-            }
-            outQuotient.dataLength = num;
-            int j = 0;
-            int num10 = outQuotient.dataLength - 1;
-            while (num10 >= 0)
-            {
-                outQuotient._data[j] = array[num10];
-                num10--;
-                j++;
-            }
-            for (; j < maxLength; j++)
-            {
-                outQuotient._data[j] = 0u;
-            }
-            while (outQuotient.dataLength > 1 && outQuotient._data[outQuotient.dataLength - 1] == 0)
-            {
-                outQuotient.dataLength--;
-            }
-            if (outQuotient.dataLength == 0)
-            {
-                outQuotient.dataLength = 1;
-            }
-            while (outRemainder.dataLength > 1 && outRemainder._data[outRemainder.dataLength - 1] == 0)
-            {
-                outRemainder.dataLength--;
-            }
-        }
-
-        public static BigInteger operator /(BigInteger bi1, BigInteger bi2)
-        {
-            BigInteger bigInteger = new BigInteger();
-            BigInteger outRemainder = new BigInteger();
-            int num = maxLength - 1;
-            bool flag = false;
-            bool flag2 = false;
-            if (((int)bi1._data[num] & -2147483648) != 0)
-            {
-                bi1 = -bi1;
-                flag2 = true;
-            }
-            if (((int)bi2._data[num] & -2147483648) != 0)
-            {
-                bi2 = -bi2;
-                flag = true;
-            }
-            if (bi1 < bi2)
-            {
-                return bigInteger;
-            }
-            if (bi2.dataLength == 1)
-            {
-                SingleByteDivide(bi1, bi2, bigInteger, outRemainder);
-            }
-            else
-            {
-                MultiByteDivide(bi1, bi2, bigInteger, outRemainder);
-            }
-            if (flag2 != flag)
-            {
-                return -bigInteger;
-            }
-            return bigInteger;
-        }
-
-        public static BigInteger operator %(BigInteger bi1, BigInteger bi2)
-        {
-            BigInteger outQuotient = new BigInteger();
-            BigInteger bigInteger = new BigInteger(bi1);
-            int num = maxLength - 1;
-            bool flag = false;
-            if (((int)bi1._data[num] & -2147483648) != 0)
-            {
-                bi1 = -bi1;
-                flag = true;
-            }
-            if (((int)bi2._data[num] & -2147483648) != 0)
-            {
-                bi2 = -bi2;
-            }
-            if (bi1 < bi2)
-            {
-                return bigInteger;
-            }
-            if (bi2.dataLength == 1)
-            {
-                SingleByteDivide(bi1, bi2, outQuotient, bigInteger);
-            }
-            else
-            {
-                MultiByteDivide(bi1, bi2, outQuotient, bigInteger);
-            }
-            if (flag)
-            {
-                return -bigInteger;
-            }
-            return bigInteger;
-        }
-
-        public static BigInteger operator &(BigInteger bi1, BigInteger bi2)
-        {
-            BigInteger bigInteger = new BigInteger();
-            int num = (bi1.dataLength > bi2.dataLength) ? bi1.dataLength : bi2.dataLength;
-            for (int i = 0; i < num; i++)
-            {
-                uint num2 = bi1._data[i] & bi2._data[i];
-                bigInteger._data[i] = num2;
-            }
-            bigInteger.dataLength = maxLength;
-            while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-            {
-                bigInteger.dataLength--;
-            }
-            return bigInteger;
-        }
-
-        public static BigInteger operator |(BigInteger bi1, BigInteger bi2)
-        {
-            BigInteger bigInteger = new BigInteger();
-            int num = (bi1.dataLength > bi2.dataLength) ? bi1.dataLength : bi2.dataLength;
-            for (int i = 0; i < num; i++)
-            {
-                uint num2 = bi1._data[i] | bi2._data[i];
-                bigInteger._data[i] = num2;
-            }
-            bigInteger.dataLength = maxLength;
-            while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-            {
-                bigInteger.dataLength--;
-            }
-            return bigInteger;
-        }
-
-        public static BigInteger operator ^(BigInteger bi1, BigInteger bi2)
-        {
-            BigInteger bigInteger = new BigInteger();
-            int num = (bi1.dataLength > bi2.dataLength) ? bi1.dataLength : bi2.dataLength;
-            for (int i = 0; i < num; i++)
-            {
-                uint num2 = bi1._data[i] ^ bi2._data[i];
-                bigInteger._data[i] = num2;
-            }
-            bigInteger.dataLength = maxLength;
-            while (bigInteger.dataLength > 1 && bigInteger._data[bigInteger.dataLength - 1] == 0)
-            {
-                bigInteger.dataLength--;
-            }
-            return bigInteger;
-        }
-
-        public BigInteger Max(BigInteger bi)
-        {
-            if (this > bi)
-            {
-                return new BigInteger(this);
-            }
-            return new BigInteger(bi);
-        }
-
-        public BigInteger Min(BigInteger bi)
-        {
-            if (this < bi)
-            {
-                return new BigInteger(this);
-            }
-            return new BigInteger(bi);
-        }
-
-        /// <summary>
-        /// Returns the sign of the value
-        /// </summary>
         public int Sign()
         {
-            if (this == BigInteger.Zero)
-            {
-                return 0;
-            }
-
-            if ((this._data[maxLength - 1] & 0x80000000) != 0)
-                return -1;
-            else
-                return 1;
+            return _sign;
         }
 
-        public BigInteger Abs()
+        public static explicit operator int(BigInteger value)
         {
-            if (((int)_data[maxLength - 1] & -2147483648) != 0)
+            int result = (int)value._data[0];
+
+            if (value._sign < 0)
+                result *= -1;
+
+            return result;
+        }
+
+        public static explicit operator long(BigInteger value)
+        {
+            long result = 0;
+
+            int max = value._data.Length;
+
+            if (max > 2) max = 2;
+
+            for (int i = 0; i < max; i++)
             {
-                return -this;
+                var bits = i * 32;
+                result += ((value._data[i]) * (1 << bits));
             }
-            return new BigInteger(this);
+
+            if (value._sign < 0)
+                result *= -1;
+
+            return result;
+        }
+
+        public static implicit operator BigInteger(int val)
+        {
+            return new BigInteger(val);
+        }
+
+        public static implicit operator BigInteger(long val)
+        {
+            return new BigInteger(val);
+        }
+
+        public static BigInteger Abs(BigInteger x)
+        {
+            return new BigInteger(x._data, 1);
         }
 
         public override string ToString()
         {
-            return ToString(10);
+            return ToHex();
         }
 
-        public string ToString(int radix)
+        public string ToDecimal()
         {
+            int radix = 10;
             Throw.If(radix < 2 || radix > 36, "Radix must be >= 2 and <= 36");
 
             string text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
             string text2 = "";
-            BigInteger bigInteger = this;
+            BigInteger BigInteger = this;
             bool flag = false;
 
-            if (((int)bigInteger._data[maxLength - 1] & -2147483648) != 0)
-            {
-                flag = true;
-                try
-                {
-                    bigInteger = -bigInteger;
-                }
-                catch (Exception)
-                {
-                }
-            }
-
-            var bigInteger2 = new BigInteger();
-            var bigInteger3 = new BigInteger();
+            var BigInteger2 = new BigInteger(0);
+            var BigInteger3 = new BigInteger(0);
             var bi = new BigInteger(radix);
-            if (bigInteger.dataLength == 1 && bigInteger._data[0] == 0)
+            if (BigInteger._data.Length == 0 || (BigInteger._data.Length == 1 && BigInteger._data[0] == 0))
             {
                 text2 = "0";
             }
             else
             {
-                while (bigInteger.dataLength > 1 || (bigInteger.dataLength == 1 && bigInteger._data[0] != 0))
+                while (BigInteger._data.Length > 1 || (BigInteger._data.Length == 1 && BigInteger._data[0] != 0))
                 {
-                    SingleByteDivide(bigInteger, bi, bigInteger2, bigInteger3);
-                    text2 = ((bigInteger3._data[0] >= 10) ? (text[(int)(bigInteger3._data[0] - 10)].ToString() + text2) : (bigInteger3._data[0] + text2));
-                    bigInteger = bigInteger2;
+                    DivideAndModulus(BigInteger, bi, out BigInteger2, out BigInteger3);
+                    if (BigInteger3._data.Length == 0)
+                        text2 = "0" + text2;
+                    else
+                        text2 = ((BigInteger3._data[0] >= 10) ? (text[(int)(BigInteger3._data[0] - 10)] + text2) : (BigInteger3._data[0] + text2));
+                    BigInteger = BigInteger2;
                 }
-                if (flag)
+                if (_sign < 1 && text != "0")
                 {
                     text2 = "-" + text2;
                 }
@@ -1117,438 +247,659 @@ namespace Phantasma.Numerics
             return text2;
         }
 
-        public string ToHexString()
+        public string ToHex()
         {
-            string text = _data[dataLength - 1].ToString("X");
-            for (int num = dataLength - 2; num >= 0; num--)
+            string result = "";
+
+            foreach (var digit in _data)
+                result = result.Insert(0, digit.ToString("x8"));
+
+            result = result.TrimStart('0');
+
+            return result;
+        }
+
+        private static uint[] Add(uint[] X, uint[] Y)
+        {
+            var longest = Math.Max(X.Length, Y.Length);
+            var r = new uint[longest + 1];
+
+            uint overflow = 0;
+            for (int i = 0; i < longest; i++)
             {
-                text += _data[num].ToString("X8");
+                uint x = i < X.Length ? X[i] : 0;
+                uint y = i < Y.Length ? Y[i] : 0;
+                ulong sum = (ulong)overflow + x + y;
+
+                r[i] = (uint)sum;
+                overflow = (uint)(sum >> _Base);
             }
-            return text;
+
+            r[longest] = (byte)overflow;
+            return r;
         }
 
-        public BigInteger GCD(BigInteger bi)
+        private static uint[] Subtract(uint[] X, uint[] Y)
         {
-            BigInteger bigInteger = (((int)_data[maxLength - 1] & -2147483648) == 0) ? this : (-this);
-            BigInteger bigInteger2 = (((int)bi._data[maxLength - 1] & -2147483648) == 0) ? bi : (-bi);
-            BigInteger bigInteger3 = bigInteger2;
-            while (bigInteger.dataLength > 1 || (bigInteger.dataLength == 1 && bigInteger._data[0] != 0))
+            var longest = X.Length > Y.Length ? X.Length : Y.Length;
+            var r = new uint[longest];
+
+            long carry = 0;
+
+            for (int i = 0; i < r.Length; i++)
             {
-                bigInteger3 = bigInteger;
-                bigInteger = bigInteger2 % bigInteger;
-                bigInteger2 = bigInteger3;
+                long x = i < X.Length ? X[i] : 0;
+                long y = i < Y.Length ? Y[i] : 0;
+                var tmpSub = x - y - carry;
+                r[i] = (uint)(tmpSub & uint.MaxValue);
+                carry = ((tmpSub >= 0) ? 0 : 1);
             }
-            return bigInteger3;
+
+            return r;
         }
 
-        public bool TestBit(int index)
+        private static uint[] Multiply(uint[] X, uint[] Y)
         {
-            return (this & (BigInteger.One << index)) > BigInteger.Zero;
-        }
+            uint[] output = new uint[X.Length + Y.Length + 1];
 
-        public int GetLowestSetBit()
-        {
-            if (this.Sign() == 0)
-                return -1;
-
-            byte[] b = this.ToByteArray();
-            int w = 0;
-            while (b[w] == 0)
-                w++;
-            for (int x = 0; x < 8; x++)
-                if ((b[w] & 1 << x) > 0)
-                    return x + w * 8;
-            throw new Exception();
-        }
-
-        public int GetBitLength()
-        {
-            while (dataLength > 1 && _data[dataLength - 1] == 0)
+            for (int i = 0; i < X.Length; i++)
             {
-                dataLength--;
-            }
-            uint num = _data[dataLength - 1];
-            uint num2 = 2147483648u;
-            int num3 = 32;
-            while (num3 > 0 && (num & num2) == 0)
-            {
-                num3--;
-                num2 >>= 1;
-            }
-            num3 += dataLength - 1 << 5;
-            return (num3 == 0) ? 1 : num3;
-        }
+                if (X[i] == 0)
+                    continue;
 
-        public static explicit operator int(BigInteger value)
-        {
-            return (int)value._data[0];
-        }
+                ulong carry = 0uL;
+                int k = i;
 
-        public static explicit operator long(BigInteger value)
-        {
-            long num = 0L;
-            num = value._data[0];
-            try
-            {
-                num |= (long)((ulong)value._data[1] << 32);
-            }
-            catch (Exception)
-            {
-                if (((int)value._data[0] & -2147483648) != 0)
+                for (int j = 0; j < Y.Length; j++, k++)
                 {
-                    num = (int)value._data[0];
-                }
-            }
-            return num;
-        }
-
-        /// <summary>
-        /// Fast calculation of modular reduction using Barrett's reduction
-        /// </summary>
-        /// <remarks>
-        /// Requires x &lt; b^(2k), where b is the base.  In this case, base is 2^32 (uint).
-        /// </remarks>
-        private BigInteger BarrettReduction(BigInteger x, BigInteger n, BigInteger constant)
-        {
-            int k = n.dataLength,
-                kPlusOne = k + 1,
-                kMinusOne = k - 1;
-
-            BigInteger q1 = new BigInteger();
-
-            // q1 = x / b^(k-1)
-            for (int i = kMinusOne, j = 0; i < x.dataLength; i++, j++)
-                q1._data[j] = x._data[i];
-
-            q1.dataLength = x.dataLength - kMinusOne;
-            if (q1.dataLength <= 0)
-                q1.dataLength = 1;
-
-            BigInteger q2 = q1 * constant;
-            BigInteger q3 = new BigInteger();
-
-            // q3 = q2 / b^(k+1)
-            for (int i = kPlusOne, j = 0; i < q2.dataLength; i++, j++)
-                q3._data[j] = q2._data[i];
-            q3.dataLength = q2.dataLength - kPlusOne;
-            if (q3.dataLength <= 0)
-                q3.dataLength = 1;
-
-
-            // r1 = x mod b^(k+1)
-            // i.e. keep the lowest (k+1) words
-            var r1 = new BigInteger();
-            int lengthToCopy = (x.dataLength > kPlusOne) ? kPlusOne : x.dataLength;
-            for (int i = 0; i < lengthToCopy; i++)
-                r1._data[i] = x._data[i];
-            r1.dataLength = lengthToCopy;
-
-
-            // r2 = (q3 * n) mod b^(k+1)
-            // partial multiplication of q3 and n
-
-            var r2 = new BigInteger();
-            for (int i = 0; i < q3.dataLength; i++)
-            {
-                if (q3._data[i] == 0) continue;
-
-                ulong mcarry = 0;
-                int t = i;
-                for (int j = 0; j < n.dataLength && t < kPlusOne; j++, t++)
-                {
-                    // t = i + j
-                    ulong val = ((ulong)q3._data[i] * (ulong)n._data[j]) +
-                                 (ulong)r2._data[t] + mcarry;
-
-                    r2._data[t] = (uint)(val & 0xFFFFFFFF);
-                    mcarry = (val >> 32);
+                    ulong tmp = (ulong)(X[i] * (long)Y[j] + output[k] + (long)carry);
+                    output[k] = (uint)(tmp);
+                    carry = tmp >> 32;
                 }
 
-                if (t < kPlusOne)
-                    r2._data[t] = (uint)mcarry;
-            }
-            r2.dataLength = kPlusOne;
-            while (r2.dataLength > 1 && r2._data[r2.dataLength - 1] == 0)
-                r2.dataLength--;
-
-            r1 -= r2;
-            if ((r1._data[maxLength - 1] & 0x80000000) != 0)        // negative
-            {
-                BigInteger val = new BigInteger();
-                val._data[kPlusOne] = 0x00000001;
-                val.dataLength = kPlusOne + 1;
-                r1 += val;
+                output[i + Y.Length] = (uint)carry;
             }
 
-            while (r1 >= n)
-                r1 -= n;
-
-            return r1;
+            return output;
         }
 
-        /// <summary>
-        /// Modulo Exponentiation
-        /// </summary>
-        /// <param name="exp">Exponential</param>
-        /// <param name="n">Modulo</param>
-        /// <returns>BigInteger result of raising this to the power of exp and then modulo n </returns>
-        public BigInteger ModPow(BigInteger exp, BigInteger n)
+        public static BigInteger operator +(BigInteger a, BigInteger b)
         {
-            Throw.If((exp._data[maxLength - 1] & 0x80000000) != 0, "Positive exponents only.");
+            BigInteger result;
 
-            BigInteger resultNum = 1;
-            BigInteger tempNum;
-            bool thisNegative = false;
-
-            if ((this._data[maxLength - 1] & 0x80000000) != 0)   // negative this
+            //all these if-else's are to make sure we don't attempt operations that would give a negative result,
+            //allowing the large int operations to deal only in the scope of unsigned numbers
+            if (a._sign < 0 && b._sign < 0)
             {
-                tempNum = -this % n;
-                thisNegative = true;
+                result = new BigInteger(Add(a._data, b._data));
+                result._sign = result == 0 ? 0 : -1;
             }
             else
-                tempNum = this % n;  // ensures (tempNum * tempNum) < b^(2k)
-
-            if ((n._data[maxLength - 1] & 0x80000000) != 0)   // negative n
-                n = -n;
-
-            // calculate constant = b^(2k) / m
-            var constant = new BigInteger();
-
-            int i = n.dataLength << 1;
-            constant._data[i] = 0x00000001;
-            constant.dataLength = i + 1;
-
-            constant = constant / n;
-            int totalBits = exp.GetBitLength();
-            int count = 0;
-
-            // perform squaring and multiply exponentiation
-            for (int pos = 0; pos < exp.dataLength; pos++)
+            if (a._sign < 0)
             {
-                uint mask = 0x01;
-
-                for (int index = 0; index < 32; index++)
+                if (Abs(a) < b)
                 {
-                    if ((exp._data[pos] & mask) != 0)
-                        resultNum = BarrettReduction(resultNum * tempNum, n, constant);
-
-                    mask <<= 1;
-
-                    tempNum = BarrettReduction(tempNum * tempNum, n, constant);
-
-
-                    if (tempNum.dataLength == 1 && tempNum._data[0] == 1)
-                    {
-                        if (thisNegative && (exp._data[0] & 0x1) != 0)    //odd exp
-                            return -resultNum;
-                        return resultNum;
-                    }
-                    count++;
-                    if (count == totalBits)
-                        break;
-                }
-            }
-
-            if (thisNegative && (exp._data[0] & 0x1) != 0)    //odd exp
-                return -resultNum;
-
-            return resultNum;
-        }
-
-        public BigInteger ModInverse(BigInteger modulus)
-        {
-            BigInteger[] array = new BigInteger[2]
-            {
-            0,
-            1
-            };
-            BigInteger[] array2 = new BigInteger[2];
-            BigInteger[] array3 = new BigInteger[2]
-            {
-            0,
-            0
-            };
-            int num = 0;
-            BigInteger bi = modulus;
-            BigInteger bigInteger = this;
-            while (bigInteger.dataLength > 1 || (bigInteger.dataLength == 1 && bigInteger._data[0] != 0))
-            {
-                BigInteger bigInteger2 = new BigInteger();
-                BigInteger bigInteger3 = new BigInteger();
-                if (num > 1)
-                {
-                    BigInteger bigInteger4 = (array[0] - array[1] * array2[0]) % modulus;
-                    array[0] = array[1];
-                    array[1] = bigInteger4;
-                }
-                if (bigInteger.dataLength == 1)
-                {
-                    SingleByteDivide(bi, bigInteger, bigInteger2, bigInteger3);
+                    result = new BigInteger(Subtract(b._data, a._data));
+                    result._sign = result == 0 ? 0 : 1;
                 }
                 else
                 {
-                    MultiByteDivide(bi, bigInteger, bigInteger2, bigInteger3);
+                    result = new BigInteger(Subtract(a._data, b._data));
+                    result._sign = result == 0 ? 0 : -1;
                 }
-                array2[0] = array2[1];
-                array3[0] = array3[1];
-                array2[1] = bigInteger2;
-                array3[1] = bigInteger3;
-                bi = bigInteger;
-                bigInteger = bigInteger3;
-                num++;
             }
-
-            Throw.If(array3[0].dataLength > 1 || (array3[0].dataLength == 1 && array3[0]._data[0] != 1), "No inverse!");
-
-            BigInteger bigInteger5 = (array[0] - array[1] * array2[0]) % modulus;
-            if (((int)bigInteger5._data[maxLength - 1] & -2147483648) != 0)
+            else if (b._sign < 0)
             {
-                bigInteger5 += modulus;
-            }
-            return bigInteger5;
-        }
-
-        public byte[] ToByteArray()
-        {
-            int bitCount = GetBitLength();
-            int byteCount = bitCount >> 3;
-
-            if ((bitCount & 7) != 0)
-            {
-                byteCount++;
-            }
-
-            var array = new byte[byteCount];
-            int num3 = 0;
-            uint num4 = _data[dataLength - 1];
-
-            int num6 = num3;
-            uint num7;
-            if ((num7 = ((num4 >> 24) & 0xFF)) != 0)
-            {
-                array[num3++] = (byte)num7;
-            }
-            if ((num7 = ((num4 >> 16) & 0xFF)) != 0)
-            {
-                array[num3++] = (byte)num7;
-            }
-            else if (num3 > num6)
-            {
-                num3++;
-            }
-            if ((num7 = ((num4 >> 8) & 0xFF)) != 0)
-            {
-                array[num3++] = (byte)num7;
-            }
-            else if (num3 > num6)
-            {
-                num3++;
-            }
-            if ((num7 = (num4 & 0xFF)) != 0)
-            {
-                array[num3++] = (byte)num7;
-            }
-            else if (num3 > num6)
-            {
-                num3++;
-            }
-            int num12 = dataLength - 2;
-            while (num12 >= 0)
-            {
-                num4 = _data[num12];
-                array[num3 + 3] = (byte)(num4 & 0xFF);
-                num4 >>= 8;
-                array[num3 + 2] = (byte)(num4 & 0xFF);
-                num4 >>= 8;
-                array[num3 + 1] = (byte)(num4 & 0xFF);
-                num4 >>= 8;
-                array[num3] = (byte)(num4 & 0xFF);
-                num12--;
-                num3 += 4;
-            }
-            Array.Reverse(array);
-            return array;
-        }
-
-        public void SetBit(uint bitNum)
-        {
-            uint num = bitNum >> 5;
-            byte b = (byte)(bitNum & 0x1F);
-            uint num2 = (uint)(1 << (int)b);
-            _data[num] |= num2;
-            if (num >= dataLength)
-            {
-                dataLength = (int)(num + 1);
-            }
-        }
-
-        public void UnsetBit(uint bitNum)
-        {
-            uint num = bitNum >> 5;
-            if (num < dataLength)
-            {
-                byte b = (byte)(bitNum & 0x1F);
-                uint num2 = (uint)(1 << (int)b);
-                uint num3 = (uint)(-1 ^ (int)num2);
-                _data[num] &= num3;
-                if (dataLength > 1 && _data[dataLength - 1] == 0)
+                if (a < Abs(b))
                 {
-                    dataLength--;
+                    result = new BigInteger(Subtract(b._data, a._data));
+                    result._sign = result == 0 ? 0 : -1;
+                }
+                else
+                {
+                    result = new BigInteger(Subtract(a._data, b._data));
+                    result._sign = result == 0 ? 0 : 1;
                 }
             }
+            else
+            {
+                result = new BigInteger(Add(b._data, a._data));
+                result._sign = result == 0 ? 0 : 1;
+            }
+
+            return result;
         }
 
-        public BigInteger Sqrt()
+        public static BigInteger operator -(BigInteger a, BigInteger b)
         {
-            Throw.If(this < 0, "cannot be negative");
+            BigInteger result;
 
-            if (this == 0)
+            //all these if-else's are to make sure we don't attempt operations that would give a negative result,
+            //allowing the large int operations to deal only in the scope of unsigned numbers
+            if (a._sign < 0 && b._sign < 0)
+            {
+                if (Abs(a) < Abs(b))
+                {
+                    result = new BigInteger(Subtract(b._data, a._data));
+                    result._sign = result == 0 ? 0 : 1;
+                }
+                else
+                {
+                    result = new BigInteger(Subtract(a._data, b._data));
+                    result._sign = result == 0 ? 0 : -1;
+                }
+            }
+            else
+            if (a._sign < 0)
+            {
+                result = new BigInteger(Add(a._data, b._data));
+                result._sign = result == 0 ? 0 : -1;
+            }
+            else if (b._sign < 0)
+            {
+                result = new BigInteger(Add(a._data, b._data));
+                result._sign = result == 0 ? 0 : 1;
+            }
+            else
+            {
+                if (a < b)
+                {
+                    result = new BigInteger(Subtract(b._data, a._data));
+                    result._sign = result == 0 ? 0 : -1;
+                }
+                else
+                {
+                    result = new BigInteger(Subtract(a._data, b._data));
+                    result._sign = result == 0 ? 0 : 1;
+                }
+            }
+
+            return result;
+        }
+
+        public static BigInteger operator *(BigInteger a, BigInteger b)
+        {
+            var result = new BigInteger(Multiply(a._data, b._data))
+            {
+                _sign = a._sign * b._sign
+            };
+            return result;
+        }
+
+        public static BigInteger operator /(BigInteger a, BigInteger b)
+        {
+            BigInteger quot, rem;
+            DivideAndModulus(Abs(a), Abs(b), out quot, out rem);
+            quot._sign = quot._sign == 0 ? 0 : a._sign * b._sign;
+            return quot;
+        }
+
+        public static BigInteger operator %(BigInteger a, BigInteger b)
+        {
+            BigInteger quot, rem;
+            DivideAndModulus(a, b, out quot, out rem);
+            return rem;
+        }
+
+        public static void DivideAndModulus(BigInteger a, BigInteger b, out BigInteger quot, out BigInteger rem)
+        {
+            if (b == 0)
+            {
+                quot = Zero;
+                rem = Zero;
+                return;
+            }
+
+            if (a._data.Length < b._data.Length)
+            {
+                quot = new BigInteger(0);
+                rem = new BigInteger(a);
+                return;
+            }
+
+            if (b._data.Length == 1)
+                SingleDigitDivMod(a, b, out quot, out rem);
+            else
+                MultiDigitDivMod(a, b, out quot, out rem);
+
+            if (rem < 0)    //using the convention that 0 <= rem <= denominator. So if rem < 0, add the denominator to it
+                rem += b;
+
+            quot._sign = a._sign * b._sign;
+
+        }
+
+        //do not access this function directly under any circumstances, always go through DivideAndModulus
+        private static void SingleDigitDivMod(BigInteger numerator, BigInteger denominator, out BigInteger quotient, out BigInteger remainder)
+        {
+            uint[] tmpQuotArray = new uint[numerator.dataLength - denominator.dataLength + 1];
+            uint[] remArray = new uint[numerator.dataLength];
+            int quotIter = 0;   //quotient array iterator index
+            for (int i = 0; i < numerator.dataLength; i++)
+            {
+                remArray[i] = numerator._data[i];
+            }
+
+            ulong quickDen = denominator._data[0];  //quick denominator
+            int remIter = remArray.Length - 1;  //remainder array iterator index
+            ulong tmpRem = remArray[remIter];   //temporary remainder digit
+
+            if (tmpRem >= quickDen)
+            {
+                ulong tmpQuot = tmpRem / quickDen;
+                tmpQuotArray[quotIter++] = (uint)tmpQuot;
+                remArray[remIter] = (uint)(tmpRem % quickDen);
+            }
+
+            remIter--;
+            while (remIter >= 0)
+            {
+                tmpRem = ((ulong)remArray[remIter + 1] << 32) + remArray[remIter];
+                ulong tmpQuot = tmpRem / quickDen;
+                tmpQuotArray[quotIter++] = (uint)tmpQuot;
+                remArray[remIter + 1] = 0u;
+                remArray[remIter--] = (uint)(tmpRem % quickDen);
+            }
+
+            uint[] quotArray = new uint[quotIter];
+            for (int i = quotArray.Length - 1, j = 0; i >= 0; i--, j++)
+            {
+                quotArray[j] = tmpQuotArray[i];
+            }
+
+            quotient = new BigInteger(quotArray);
+            remainder = new BigInteger(remArray);
+        }
+
+        //do not access this function directly under any circumstances, always go through DivideAndModulus
+        private static void MultiDigitDivMod(BigInteger numerator, BigInteger denominator, out BigInteger quot, out BigInteger rem)
+        {
+            uint[] quotArray = new uint[numerator.dataLength - denominator.dataLength + 1];
+            uint[] remArray = new uint[numerator.dataLength + 1];
+
+            uint tmp = 2147483648u;
+            uint tmp2 = denominator._data[denominator.dataLength - 1];    //denominator most significant digit
+            int shiftCount = 0;
+
+            while (tmp != 0 && (tmp2 & tmp) == 0)
+            {
+                shiftCount++;
+                tmp >>= 1;
+            }
+            for (int i = 0; i < numerator.dataLength; i++)
+            {
+                remArray[i] = numerator._data[i];
+            }
+
+            ShiftLeft(ref remArray, shiftCount);
+            denominator <<= shiftCount;
+
+            int j = numerator.dataLength - denominator.dataLength + 1;
+            int remIter = numerator.dataLength; //yes, numerator, not remArray
+            ulong denMsd = denominator._data[denominator.dataLength - 1];       //denominator most significant digit
+            ulong denSubMsd = denominator._data[denominator.dataLength - 2];    //denominator second most significant digit
+            int denSize = denominator.dataLength + 1;
+
+            uint[] tmpRemSubArray = new uint[denSize];
+
+            while (j > 0)
+            {
+                ulong quickDenominator = ((ulong)remArray[remIter] << 32) + remArray[remIter - 1];
+                ulong tmpQuot = quickDenominator / denMsd;
+                ulong tmpRem = quickDenominator % denMsd;
+                bool flag = false;
+                while (!flag)
+                {
+                    flag = true;
+                    if (tmpQuot == 4294967296L || tmpQuot * denSubMsd > (tmpRem << 32) + remArray[remIter - 2])
+                    {
+                        tmpQuot--;
+                        tmpRem += denMsd;
+                        if (tmpRem < 4294967296L)
+                        {
+                            flag = false;
+                        }
+                    }
+                }
+
+                for (int k = 0; k < denSize; k++)
+                {
+                    tmpRemSubArray[(tmpRemSubArray.Length - 1) - k] = remArray[remIter - k];
+                }
+
+                var tmpRemBigInt = new BigInteger(tmpRemSubArray);
+                BigInteger estimNumBigInt = denominator * (long)tmpQuot;  //current numerator estimate
+                while (estimNumBigInt > tmpRemBigInt)
+                {
+                    tmpQuot--;
+                    estimNumBigInt -= denominator;
+                }
+                BigInteger estimRemBigInt = tmpRemBigInt - estimNumBigInt;    //current remainder estimate
+                for (int k = 0; k < denSize; k++)
+                {
+                    tmp = denominator.dataLength - k < estimRemBigInt._data.Length
+                        ? estimRemBigInt._data[denominator.dataLength - k]
+                        : 0;
+                    remArray[remIter - k] = tmp;
+                }
+
+                remIter--;
+                j--;
+                quotArray[j] = (uint)tmpQuot;
+            }
+
+            quot = new BigInteger(quotArray);
+
+            ShiftRight(ref remArray, shiftCount);
+
+            rem = new BigInteger(remArray);
+        }
+
+        public static BigInteger operator >>(BigInteger n, int bits)
+        {
+            bits = bits < 0 ? -bits : bits;
+            ShiftRight(ref n._data, bits);
+
+            if (n._data[0] == 0 && n.dataLength == 1)
+                n._sign = 0;
+
+            return n;
+        }
+
+        private static void ShiftRight(ref uint[] buffer, int shiftBitCount)
+        {
+            int length = buffer.Length;
+
+            int shrinkage = shiftBitCount / 32;  //amount of digits we need to cut from the buffer
+
+            int quickShiftAmount = shiftBitCount % 32;
+
+
+            uint msd = buffer[length - 1] >> quickShiftAmount;  //shifts the most significant digit
+            int extraShrinkage = (msd == 0) ? 1 : 0;    //if that shift goes to 0, it means we need to cut
+                                                        //an extra position of the array to account for an MSD == 0
+
+            int newLength = buffer.Length - shrinkage - extraShrinkage;
+
+            if (newLength <= 0)
+            {
+                buffer = new uint[1];
+                return;
+            }
+
+            uint[] newBuffer = new uint[newLength];
+
+            quickShiftAmount = 32 - quickShiftAmount;   //we'll use this new shift amount to pre-left shift the applicable digits
+                                                        //so we have easy access to the potential underflow of any given digit's right shift operation
+
+            if (extraShrinkage == 1)
+                newBuffer[newLength - 1] = buffer[length - 1] << quickShiftAmount;
+
+            for (int i = length - (1 + extraShrinkage), j = newLength - 1; j >= 1; i--, j--)
+            {
+                ulong upshiftedVal = (ulong)buffer[i] << quickShiftAmount;
+
+                uint shiftMsd = (uint)(upshiftedVal >> 32);
+                uint shiftLsd = (uint)upshiftedVal;
+
+                newBuffer[j] |= shiftMsd;
+                newBuffer[j - 1] |= shiftLsd;
+            }
+
+            newBuffer[0] |= buffer[shrinkage] >> shiftBitCount;
+
+            buffer = newBuffer;
+        }
+
+
+        public static BigInteger operator <<(BigInteger n, int bits)
+        {
+            bits = bits < 0 ? -bits : bits;
+            ShiftLeft(ref n._data, bits);
+            return n;
+        }
+
+        private static void ShiftLeft(ref uint[] buffer, int shiftBitCount)
+        {
+            int length = buffer.Length;
+
+            int amountOfZeros = shiftBitCount / 32;  //amount of least significant digit zero padding we need
+            int quickShiftAmount = shiftBitCount % 32;
+
+            long msd = ((long)buffer[length - 1]) << quickShiftAmount;  //shifts the most significant digit
+
+            int extraDigit = (msd != (uint)msd) ? 1 : 0;  //if it goes above the uint range, we need to add
+                                                          //a new position for the new MSD
+
+            int newLength = buffer.Length + amountOfZeros + extraDigit;
+            uint[] newBuffer = new uint[newLength];
+
+            for (int i = 0, j = amountOfZeros; i < length; i++, j++)
+            {
+                ulong shiftedVal = ((ulong)buffer[i]) << quickShiftAmount;
+
+                var shiftLsd = (uint)shiftedVal;
+                var shiftMsd = (uint)(shiftedVal >> 32);
+
+                newBuffer[j] |= shiftLsd;
+
+                if (shiftMsd > 0)
+                    newBuffer[j + 1] |= shiftMsd;
+            }
+
+            buffer = newBuffer;
+        }
+
+        public static BigInteger operator ++(BigInteger n)
+        {
+            return n + 1;
+        }
+
+        public static BigInteger operator --(BigInteger n)
+        {
+            return n - 1;
+        }
+
+        public static BigInteger operator -(BigInteger n)
+        {
+            n._sign = -n._sign;
+            return n;
+        }
+
+        public static bool operator ==(BigInteger a, BigInteger b)
+        {
+            return a._data.Length == b._data.Length && a._sign == b._sign && a._data.SequenceEqual(b._data);
+        }
+
+        public static bool operator !=(BigInteger a, BigInteger b)
+        {
+            return a._data.Length != b._data.Length || a._sign != b._sign || !a._data.SequenceEqual(b._data);
+        }
+
+        private static bool LogicalCompare(BigInteger a, BigInteger b, bool op)
+        {
+            if (a._sign < b._sign)
+            {
+                return op;
+            }
+
+            if (a._sign > b._sign)
+            {
+                return !op;
+            }
+
+            if (a._data.Length < b._data.Length)
+            {
+                return op;
+            }
+
+            if (a._data.Length > b._data.Length)
+            {
+                return !op;
+            }
+
+            var A = a._data;
+            var B = b._data;
+            for (int i = A.Length - 1; i >= 0; i--)
+            {
+                var x = A[i];
+                var y = B[i];
+                if (x < y)
+                {
+                    return op;
+                }
+
+                if (x > y)
+                {
+                    return !op;
+                }
+            }
+
+            return false;
+        }
+
+        public static bool operator <(BigInteger a, BigInteger b)
+        {
+            return LogicalCompare(a, b, true);
+        }
+
+        public static bool operator >(BigInteger a, BigInteger b)
+        {
+            return LogicalCompare(a, b, false);
+        }
+
+        public static bool operator <=(BigInteger a, BigInteger b)
+        {
+            return (a == b || a < b);
+        }
+
+        public static bool operator >=(BigInteger a, BigInteger b)
+        {
+            return (a == b || a > b);
+        }
+
+        public static BigInteger operator ^(BigInteger a, BigInteger b)
+        {
+            var len = a._data.Length > b._data.Length ? a._data.Length : b._data.Length;
+            var temp = new uint[len];
+
+
+            for (int i = 0; i < len; i++)
+            {
+                uint A = i < a._data.Length ? a._data[i] : 0;
+                uint B = i < b._data.Length ? b._data[i] : 0;
+                temp[i] = (A ^ B);
+            }
+
+            return new BigInteger(temp);
+        }
+
+        public static BigInteger operator |(BigInteger a, BigInteger b)
+        {
+            var len = a._data.Length > b._data.Length ? a._data.Length : b._data.Length;
+            var temp = new uint[len];
+
+
+            for (int i = 0; i < len; i++)
+            {
+                uint A = i < a._data.Length ? a._data[i] : 0;
+                uint B = i < b._data.Length ? b._data[i] : 0;
+                temp[i] = A | B;
+            }
+
+            return new BigInteger(temp);
+        }
+
+        public static BigInteger operator &(BigInteger a, BigInteger b)
+        {
+            var len = a._data.Length > b._data.Length ? a._data.Length : b._data.Length;
+            var temp = new uint[len];
+
+
+            for (int i = 0; i < len; i++)
+            {
+                uint A = i < a._data.Length ? a._data[i] : 0;
+                uint B = i < b._data.Length ? b._data[i] : 0;
+                temp[i] = A & B;
+            }
+
+            return new BigInteger(temp);
+        }
+
+        public bool Equals(BigInteger other)
+        {
+            if (other._data.Length != _data.Length)
+            {
+                return false;
+            }
+
+            return _data.SequenceEqual(other._data);
+        }
+
+        public int CompareTo(BigInteger other)
+        {
+            if (other.Equals(this))
             {
                 return 0;
             }
 
-            uint num = (uint)GetBitLength();
+            if (other < this)
+            {
+                return -1;
+            }
 
-            num = (((num & 1) == 0) ? (num >> 1) : ((num >> 1) + 1));
-            uint num2 = num >> 5;
-            byte b = (byte)(num & 0x1F);
-            var bigInteger = new BigInteger();
-            uint num3;
-
-            if (b == 0)
-            {
-                num3 = 2147483648u;
-            }
-            else
-            {
-                num3 = (uint)(1 << (int)b);
-                num2++;
-            }
-            bigInteger.dataLength = (int)num2;
-            for (int num4 = (int)(num2 - 1); num4 >= 0; num4--)
-            {
-                while (num3 != 0)
-                {
-                    bigInteger._data[num4] ^= num3;
-                    if (bigInteger * bigInteger > this)
-                    {
-                        bigInteger._data[num4] ^= num3;
-                    }
-                    num3 >>= 1;
-                }
-                num3 = 2147483648u;
-            }
-            return bigInteger;
+            return 1;
         }
 
         public static BigInteger Pow(BigInteger a, BigInteger b)
         {
-            BigInteger bigInteger = 1;
-            for (int i = 0; i < b; i++)
+            var val = One;
+            var i = Zero;
+
+            while (i < b)
             {
-                bigInteger *= a;
+                val *= a;
+                i = i + One;
             }
-            return bigInteger;
+            return val;
+        }
+
+        /// <summary>
+        /// Modulo Exponentiation
+        /// Ported from http://developer.classpath.org/doc/java/math/BigInteger-source.html
+        /// </summary>
+        /// <param name="exp">Exponential</param>
+        /// <param name="mod">Modulo</param>
+        /// <returns>BigInteger result of raising this to the power of exp and then modulo n </returns>
+        public BigInteger ModPow(BigInteger exp, BigInteger mod)
+        {
+            Throw.If(mod._sign == -1 || mod == 0, "Non-positive modulo");
+
+            if (exp._sign < 0)
+                return modInverse(mod).ModPow(-exp, mod);
+
+            if (exp == 1)
+                return this % mod;
+
+            BigInteger s = new BigInteger(1);
+            BigInteger t = new BigInteger(this);
+
+            while (exp != Zero)
+            {
+                if ((exp & One) == One)
+                    s = (s * t) % mod;
+
+                exp = exp >> 1;
+                t = (t * t) % mod;
+            }
+
+            return s;
+        }
+
+        //TODO: Port this from http://developer.classpath.org/doc/java/math/BigInteger-source.html
+        private static BigInteger modInverse(BigInteger mod)
+        {
+            throw new NotImplementedException();
         }
 
         public static BigInteger Parse(string input, int radix = 10)
@@ -1565,25 +916,70 @@ namespace Phantasma.Numerics
             }
             catch
             {
-                output = null;
+                output = Zero;
                 return false;
             }
         }
 
-        public static BigInteger FromHex(string hex)
+        public int GetBitLength()
         {
-            hex = ("0" + hex).Replace(" ", "").Replace("\n", "").Replace("\r", "");
-            return BigInteger.Parse(hex, 16);
+            if (this == 0)
+                return 1;
+
+            var result = (_data.Length - 1) * 32;
+
+            result += (int) Math.Log(_data[_data.Length - 1], 2) + 1;
+
+            return result;
         }
 
-        public BigInteger Mod(BigInteger module)
+        public uint[] ToUintArray()
         {
-            return this >= 0 ? (this % module) : module + (this % module);
+            return (uint[])_data.Clone();
+        }
+
+        public byte[] ToByteArray()
+        {
+            var bitLength = GetBitLength();
+            var byteArraySize = (bitLength / 4) + (uint)((bitLength % 4 > 0) ? 1 : 0);
+            byte[] result = new byte[byteArraySize];
+
+            for (int i = 0, j = 0; i < _data.Length; i++, j+=4)
+            {
+                byte[] bytes = BitConverter.GetBytes(_data[i]);
+                bytes.CopyTo(result, j);
+            }
+
+            return result;
+        }
+
+        //TODO: this probably needs looking into..
+        public override int GetHashCode()
+        {
+            long hashCode = -1521134295 * _sign;
+
+            // Rotate by 3 bits and XOR the new value
+            for (var i = 0; i < _data.Length; i++)
+            {
+                hashCode = (int)((hashCode << 3) | (hashCode >> (29)) ^ _data[i]);
+            }
+
+            return (int)hashCode;
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (obj is BigInteger temp)
+            {
+                return temp._sign == _sign && temp._data.SequenceEqual(this._data);
+            }
+
+            return false;
         }
 
         public BigInteger FlipBit(int bit)
         {
-            return this ^ (BigInteger.One << bit);
+            return this ^ (One << bit);
         }
     }
 }
